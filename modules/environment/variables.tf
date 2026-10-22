@@ -49,7 +49,7 @@ variable "github_repo" {
 }
 
 variable "frontend_branch" {
-  description = "Branch the static site is built from (test: main, prod: release)."
+  description = "Branch the static site is built from (test: test, prod: release)."
   type        = string
 }
 
@@ -143,7 +143,7 @@ variable "admin_ip_addresses" {
 }
 
 variable "extra_env" {
-  description = "Additional non-secret env vars ."
+  description = "Additional non-secret env vars. Never put secrets here; use extra_secret_env."
   type        = map(string)
   default     = {}
 }

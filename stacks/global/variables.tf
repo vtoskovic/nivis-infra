@@ -12,7 +12,7 @@ variable "registry_name" {
 variable "registry_tier" {
   description = "Registry tier: starter (free, 1 repo), basic, professional."
   type        = string
-  default     = "starter"
+  default     = "basic"
 
   validation {
     condition     = contains(["starter", "basic", "professional"], var.registry_tier)

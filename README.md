@@ -44,8 +44,8 @@ scripts/check.sh             the one quality gate: fmt, validate, module tests, 
 .github/workflows/           terraform.yml (checks, PR plans, apply global then test), terraform-prod.yml (manual prod)
 ```
 
-Rules: one state file per stack; tfvars hold **no secrets**; `prevent_destroy` guards the databases and the documents
-bucket. Run `./scripts/check.sh` before every push; it must end with `CHECK OK` (needs Docker). If it fails on
+Rules: one state file per stack; tfvars hold **no secrets**; `prevent_destroy` guards the PostgreSQL cluster and the
+documents bucket. Run `./scripts/check.sh` before every push; it must end with `CHECK OK` (needs Docker). If it fails on
 files owned by root left by old docker runs, run `rm -rf stacks/*/.terraform` and retry.
 
 ## Cost
@@ -79,8 +79,8 @@ static credentials: create each with a **1-year expiry** and put the expiry date
 | `PLAN_SPACES_ACCESS_KEY_ID` / `PLAN_SPACES_SECRET_ACCESS_KEY` | Spaces key, read on `nivis-tfstate` and the env buckets | PR plans |
 | `APPLY_DIGITALOCEAN_TOKEN` | API token, custom scopes: app, database, vpc, project, registry, domain, uptime, monitoring | applies |
 | `APPLY_SPACES_ACCESS_KEY_ID` / `APPLY_SPACES_SECRET_ACCESS_KEY` | Spaces key, full access (creates buckets, writes state) | applies |
-| `TEST_EXTRA_SECRET_ENV` | JSON map of app secrets for test | test apply |
-| `PROD_EXTRA_SECRET_ENV` | JSON map of app secrets for prod | prod apply |
+| `TEST_EXTRA_SECRET_ENV` | JSON map of app secrets for test | test plan + apply |
+| `PROD_EXTRA_SECRET_ENV` | JSON map of app secrets for prod | prod plan + apply |
 
 Example value of `TEST_EXTRA_SECRET_ENV` / `PROD_EXTRA_SECRET_ENV` (one line of JSON; later also `SENTRY_DSN`):
 
@@ -111,10 +111,11 @@ Prefer CI (PR plan, merge, terraform-prod) for every plan and apply. Only when a
 machine (reading outputs, `-replace`), export this block first, with the **apply** credentials, then init:
 
 ```bash
+# stacks/test and TEST_* values shown; for prod use stacks/prod and the PROD_* values
 export DIGITALOCEAN_TOKEN=...                                  # APPLY_DIGITALOCEAN_TOKEN
 export SPACES_ACCESS_KEY_ID=...   SPACES_SECRET_ACCESS_KEY=... # APPLY_SPACES_*
 export AWS_ACCESS_KEY_ID="$SPACES_ACCESS_KEY_ID"  AWS_SECRET_ACCESS_KEY="$SPACES_SECRET_ACCESS_KEY"
-export TF_VAR_extra_secret_env='{"RESEND_API_KEY":"re_..."}'   # the TEST_ or PROD_EXTRA_SECRET_ENV value, same env as the stack
+read -rs TF_VAR_extra_secret_env && export TF_VAR_extra_secret_env   # paste the TEST_/PROD_EXTRA_SECRET_ENV JSON (same env as the stack); -s keeps it out of the terminal and shell history
 terraform -chdir=stacks/test init -backend-config=../../backend.hcl
 ```
 
@@ -131,7 +132,7 @@ DigitalOcean); Resend belongs to NIVNS.
 
 1. Create the GitHub organization (Free plan) and add yourself as Owner. Create two private repos: `nivis` (app) and
    `nivis-infra` (this repo). Push **`nivis` first**, before any secrets, the GitHub app install or the
-   `github_repo` tfvar.
+   `github_repo` tfvar. Do **not** push `nivis-infra` yet (see step 4.1).
 2. In DigitalOcean (NIVNS team) create the tokens and Spaces keys from the table above, each with a 1-year expiry.
    Also create `TEST_DO_DEPLOY_TOKEN` and `PROD_DO_DEPLOY_TOKEN`.
 3. Add every secret from the table to the `nivis-infra` repo, and the deploy tokens to the `nivis` repo.
@@ -154,15 +155,18 @@ export AWS_ACCESS_KEY_ID=...   AWS_SECRET_ACCESS_KEY=...
 
 Edit `stacks/test/terraform.tfvars` and `stacks/prod/terraform.tfvars`: `github_repo` (`<org>/nivis`), `lab` (name,
 short name, address), `default_from_email`, `alert_emails`. Leave `domain = null` until NIVNS decides the hostnames
-(see DNS handoff). Commit via a PR as in [Day-to-day](#day-to-day).
+(see DNS handoff). Commit the filled tfvars on your local `main`; do not push yet.
 
 ### 4. Bootstrap order, test
 
 The App Platform app waits for its first deployment, so the image and the source branch must exist **before** the
 first test apply.
 
-1. Merge to `main`: `terraform.yml` applies `global` (registry) first, then tries `test`. If `test` fails because
-   the image or branch does not exist, that is expected; carry on.
+1. First push of `main` to `nivis-infra`, only now that the secrets, the state bucket and the DigitalOcean GitHub app
+   install exist. `terraform.yml` applies `global` (registry) first, then tries `test`. If `test` fails because the
+   image or branch does not exist, that is expected; carry on. This stands in for the order in spec §8.3 (image
+   first, then the app). A failed run leaves the databases and buckets created; the app is created (or recreated)
+   on the re-run in step 3.
 2. In the `nivis` repo: Actions, **deploy**, Run workflow on `main`. It builds and pushes `backend:<sha>` and
    `backend:test`, creates the `test` branch, and skips the deployment while `TEST_APP_ID` is unset.
 3. In `nivis-infra`: Actions, **terraform**, re-run the failed `apply-test` job (or push any small change to `main`).
@@ -173,8 +177,9 @@ first test apply.
 ### 5. Checks on test before prod
 
 - Read the real `X-Forwarded-For` chain behind App Platform and set `num_proxies` in the tfvars to match.
-- Confirm the public-URL envs resolve at runtime: `terraform -chdir=stacks/test output runtime_env` (see [local environment](#local-terraform-environment)) shows the `${APP_URL}` /
-  `${APP_DOMAIN}` bindables; log in through the default URL and check there are no CORS or CSRF errors.
+- Confirm the public-URL envs resolve at runtime: `doctl apps console <app-id> api`, then
+  `env | grep -E 'FRONTEND_URL|ALLOWED_HOSTS'` (Terraform output only shows the literal `${APP_URL}` / `${APP_DOMAIN}`
+  bindables, not their values); log in through the default URL and check there are no CORS or CSRF errors.
 - Right after an apply, a PR plan for test says "No changes".
 - Confirm the static-site build did not need an API URL (the SPA calls `/api` on the same host).
 - Enable registry garbage collection (DigitalOcean console, Container Registry, Settings); keep the last 10 `v*` tags
@@ -293,7 +298,8 @@ Terraform-managed cluster is never swapped, so state does not change. Copy the d
 2. Add your IP temporarily to `admin_ip_addresses` (as in the one-time SQL) so you can reach the Terraform-managed
    cluster, and to the restore cluster's trusted sources in the console.
 3. Get both connection strings: `doctl databases list`, then `doctl databases connection <cluster-id>`.
-4. Stop writes: scale the worker and api down to 0 via the console, or accept a short window of users reading only.
+4. Stop writes: enable maintenance mode for the app in the console (App Platform cannot scale below 1 instance), or
+   accept a short window where users can only read.
 5. Copy:
    ```bash
    pg_dump --format=custom --no-owner --dbname "<restore cluster doadmin URI for nivis>" -f nivis.dump
@@ -312,8 +318,8 @@ Find the app id: `doctl apps list` (or `terraform -chdir=stacks/test output app_
 ```bash
 doctl apps logs <app-id> api --type run --follow       # api runtime logs
 doctl apps logs <app-id> worker --type run --follow    # celery worker + beat
-doctl apps logs <app-id> migrate --type run            # the PRE_DEPLOY migrate job
-doctl apps logs <app-id> api --type build              # build logs
+doctl apps logs <app-id> migrate --type deploy         # the PRE_DEPLOY migrate job (verify in Part C)
+doctl apps logs <app-id> frontend --type build         # static-site build logs (api is image-based, no build)
 doctl apps list-deployments <app-id>                   # recent deployments and phases
 ```
 
@@ -321,7 +327,7 @@ The uptime check on `live_url` emails `alert_emails` when the site is down, slow
 
 ## Accepted risk on the Free GitHub plan
 
-The Free plan has no Environments and no required reviewers. Repository secrets, including `APPLY_*`, are readable by
+The Free plan has no Environments and no required reviewers. Repository secrets, including `APPLY_*` and `*_EXTRA_SECRET_ENV`, are readable by
 any workflow on any branch. Prod is gated by an explicit **Run workflow** button on `main`, re-checked inside the
 reusable apply workflow, but a branch that edits both workflow files could still use the apply credentials. This is
 accepted because you are the only writer and use 2FA. Dependabot PRs get no secrets, so their plans are skipped.

@@ -1,6 +1,6 @@
 # Account-wide resources shared by test and prod.
 
-# One registry per account. Starter (free) = 1 repository, enough for the single backend image
+# One registry per account. Basic tier (about $5/month) = 5 repositories, but only `backend` is used
 # (the frontend is built by App Platform as a static site and never stored here).
 resource "digitalocean_container_registry" "this" {
   name                   = var.registry_name

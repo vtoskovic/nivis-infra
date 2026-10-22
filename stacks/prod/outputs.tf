@@ -1,5 +1,5 @@
 output "app_id" {
-  description = "App ID (set as the APP_ID variable of the GitHub Environment)."
+  description = "App ID (set as the repo variable PROD_APP_ID in the nivis repo)."
   value       = module.environment.app_id
 }
 

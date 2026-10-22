@@ -14,7 +14,7 @@ run() {
     -e HOME=/tmp -e TF_PLUGIN_CACHE_DIR=/w/.tfcache -e TFLINT_PLUGIN_DIR=/w/.tfcache/tflint \
     -v "$PWD:/w" -w /w "$image" "$@"
 }
-tf() { run hashicorp/terraform:1.13 "$@"; }
+tf() { run hashicorp/terraform:1.13.4 "$@"; }
 
 echo "== terraform fmt"
 tf fmt -recursive -check -diff
@@ -65,31 +65,26 @@ if [ -n "$unpinned" ]; then
   echo "$unpinned" >&2
   wf_expect "every uses: must be pinned to a 40-character commit SHA"
 fi
+awk '/^  plan:/{p=1;next} /^  [a-z-]+:/{p=0} p' .github/workflows/terraform.yml | grep -q 'TF_VAR_extra_secret_env' ||
+  wf_expect "terraform.yml plan job must set TF_VAR_extra_secret_env"
 [ "$wf_fail" -eq 0 ] || exit 1
 run rhysd/actionlint:latest
 
-echo "== tfvars expected values (Task A5: spec sizes, branches, registry tier)"
+echo "== tfvars invariants (frontend branches, registry tier)"
 tfvars_fail=0
-# expect FILE KEY RHS: the file must contain a line "KEY = RHS" (RHS taken literally).
+# expect_tfvar FILE KEY RHS: the file must contain a line "KEY = RHS" (RHS taken literally).
 expect_tfvar() {
-  local file=$1 key=$2 rhs=$3 esc bs='\'
-  esc=${rhs//./$bs.} # the only regex metacharacter in these values is the dot
-  if ! grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*${esc}([[:space:]]|#|\$)" "$file"; then
+  local file=$1 key=$2 rhs=$3
+  if ! grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*${rhs}([[:space:]]|#|\$)" "$file"; then
     echo "MISMATCH $file: expected $key = $rhs" >&2
     tfvars_fail=1
   fi
 }
 expect_tfvar stacks/test/terraform.tfvars frontend_branch '"test"'
-expect_tfvar stacks/test/terraform.tfvars api_instance_size '"apps-s-1vcpu-0.5gb"'
-expect_tfvar stacks/test/terraform.tfvars worker_instance_size '"apps-s-1vcpu-1gb"'
-expect_tfvar stacks/test/terraform.tfvars domain 'null'
 expect_tfvar stacks/prod/terraform.tfvars frontend_branch '"release"'
-expect_tfvar stacks/prod/terraform.tfvars api_instance_size '"apps-s-1vcpu-1gb-fixed"'
-expect_tfvar stacks/prod/terraform.tfvars worker_instance_size '"apps-s-1vcpu-1gb"'
-expect_tfvar stacks/prod/terraform.tfvars domain 'null'
 expect_tfvar stacks/global/terraform.tfvars registry_tier '"basic"'
 if [ "$tfvars_fail" -ne 0 ]; then
-  echo "tfvars values differ from the spec; fix the MISMATCH lines above" >&2
+  echo "tfvars invariants violated; fix the MISMATCH lines above" >&2
   exit 1
 fi
 

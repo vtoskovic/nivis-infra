@@ -1,5 +1,5 @@
 output "app_id" {
-  description = "App ID; stored as a GitHub Environment variable for the deploy workflow."
+  description = "App ID; copy it into the repo variable TEST_APP_ID / PROD_APP_ID in the nivis repo."
   value       = module.app.app_id
 }
 

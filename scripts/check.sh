@@ -34,6 +34,12 @@ for module in modules/*/; do
   tf -chdir="$module" test
 done
 
+echo "== storage: no CORS (presigned downloads)"
+if grep -rq cors_configuration modules/storage; then
+  echo "modules/storage must not declare a CORS configuration; documents are served via presigned URLs" >&2
+  exit 1
+fi
+
 echo "== tflint"
 mkdir -p .tfcache/tflint
 run ghcr.io/terraform-linters/tflint --init --config /w/.tflint.hcl >/dev/null

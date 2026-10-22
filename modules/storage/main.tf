@@ -38,18 +38,6 @@ resource "digitalocean_spaces_bucket" "documents" {
   }
 }
 
-resource "digitalocean_spaces_bucket_cors_configuration" "documents" {
-  bucket = digitalocean_spaces_bucket.documents.id
-  region = var.region
-
-  cors_rule {
-    allowed_methods = ["GET", "HEAD"]
-    allowed_origins = var.allowed_origins
-    allowed_headers = ["*"]
-    max_age_seconds = 3600
-  }
-}
-
 # --- Backups: database dumps, stored in a second region --------------------------------------
 resource "digitalocean_spaces_bucket" "backups" {
   name          = "${var.name_prefix}-backups"

@@ -58,7 +58,6 @@ module "storage" {
   name_prefix                       = local.name_prefix
   region                            = var.region
   backup_region                     = var.backup_region
-  allowed_origins                   = [local.public_url]
   document_expiration_days          = var.storage.document_expiration_days
   noncurrent_version_retention_days = var.storage.noncurrent_version_retention_days
   backup_retention_days             = var.storage.backup_retention_days

@@ -15,6 +15,12 @@ resource "digitalocean_database_cluster" "this" {
   }
 }
 
+# Celery broker: never evict queued tasks.
+resource "digitalocean_database_valkey_config" "this" {
+  cluster_id              = digitalocean_database_cluster.this.id
+  valkey_maxmemory_policy = "noeviction"
+}
+
 resource "digitalocean_database_firewall" "this" {
   cluster_id = digitalocean_database_cluster.this.id
 

@@ -18,11 +18,6 @@ variable "backup_region" {
   }
 }
 
-variable "allowed_origins" {
-  description = "Origins allowed to fetch documents directly from the bucket (CORS)."
-  type        = list(string)
-}
-
 variable "noncurrent_version_retention_days" {
   description = "How long overwritten/deleted document versions are kept."
   type        = number

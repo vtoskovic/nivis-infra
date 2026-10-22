@@ -101,10 +101,26 @@ Notes:
   open a PR and confirm the plan refreshes them. If a read grant cannot read bucket configuration, use a full-access
   key for plans and record that here.
 - Every app env value is a secret to Terraform, so plans show `(sensitive value)` for all of them. To review an env
-  change, do not read the plan: run `terraform -chdir=stacks/test output runtime_env` (non-secret values) and
-  `terraform -chdir=stacks/test output secret_env_keys` (names only) before and after, with the apply credentials
-  exported as `DIGITALOCEAN_TOKEN`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` after
-  `terraform -chdir=stacks/test init -backend-config=../../backend.hcl`.
+  change, do not read the plan: after setting up the [local Terraform environment](#local-terraform-environment),
+  run `terraform -chdir=stacks/test output runtime_env` (non-secret values) and
+  `terraform -chdir=stacks/test output secret_env_keys` (names only) before and after.
+
+### Local terraform environment
+
+Prefer CI (PR plan, merge, terraform-prod) for every plan and apply. Only when a step says to run Terraform from your
+machine (reading outputs, `-replace`), export this block first, with the **apply** credentials, then init:
+
+```bash
+export DIGITALOCEAN_TOKEN=...                                  # APPLY_DIGITALOCEAN_TOKEN
+export SPACES_ACCESS_KEY_ID=...   SPACES_SECRET_ACCESS_KEY=... # APPLY_SPACES_*
+export AWS_ACCESS_KEY_ID="$SPACES_ACCESS_KEY_ID"  AWS_SECRET_ACCESS_KEY="$SPACES_SECRET_ACCESS_KEY"
+export TF_VAR_extra_secret_env='{"RESEND_API_KEY":"re_..."}'   # the TEST_ or PROD_EXTRA_SECRET_ENV value, same env as the stack
+terraform -chdir=stacks/test init -backend-config=../../backend.hcl
+```
+
+**Never run `terraform apply` locally without `TF_VAR_extra_secret_env` set to the full JSON of that environment's
+secret.** It defaults to `{}`, so an apply without it pushes an app spec with no `RESEND_API_KEY` (or other extra
+secrets) and silently strips them from the running app. Read-only commands (`output`, `plan`) are safe without it.
 
 ## First-time setup
 
@@ -157,7 +173,7 @@ first test apply.
 ### 5. Checks on test before prod
 
 - Read the real `X-Forwarded-For` chain behind App Platform and set `num_proxies` in the tfvars to match.
-- Confirm the public-URL envs resolve at runtime: `terraform output runtime_env` shows the `${APP_URL}` /
+- Confirm the public-URL envs resolve at runtime: `terraform -chdir=stacks/test output runtime_env` (see [local environment](#local-terraform-environment)) shows the `${APP_URL}` /
   `${APP_DOMAIN}` bindables; log in through the default URL and check there are no CORS or CSRF errors.
 - Right after an apply, a PR plan for test says "No changes".
 - Confirm the static-site build did not need an API URL (the SPA calls `/api` on the same host).
@@ -208,7 +224,7 @@ Both environments run on their `nivis-<env>-xxxx.ondigitalocean.app` address unt
    CAA records (if any): they must allow **Let's Encrypt** (`0 issue "letsencrypt.org"`).
 2. When IT confirms the records, set `domain = "portal-test.<nivns-domain>"` in `stacks/test/terraform.tfvars` (prod
    likewise), PR, merge. One apply, no other change: the app's URL settings follow the domain automatically.
-3. App Platform issues and renews the certificate. Check `live_url` with `terraform output live_url`.
+3. App Platform issues and renews the certificate. Check `live_url` with `terraform -chdir=stacks/<env> output live_url`.
 
 ## Day-to-day
 
@@ -257,13 +273,15 @@ Do this for every secret before its 1-year expiry, and on handover.
 5. App secrets from `*_EXTRA_SECRET_ENV` (e.g. `RESEND_API_KEY`): create the new key at the provider, update the
    GitHub secret, merge any change (test) or Run workflow terraform-prod (prod), then revoke the old key.
 6. The app's own Spaces keys (documents and backups) are Terraform resources (`digitalocean_spaces_key.app` and
-   `.backup` in the storage module). To rotate one, apply with `-replace` from your machine, with the apply
-   credentials exported:
+   `.backup` in the storage module). To rotate one, set up the
+   [local Terraform environment](#local-terraform-environment) for that stack (including `TF_VAR_extra_secret_env`;
+   omitting it strips the app's extra secrets), then:
    ```bash
-   terraform -chdir=stacks/test init -backend-config=../../backend.hcl
+   terraform -chdir=stacks/test plan  -replace='module.environment.module.storage.digitalocean_spaces_key.app'
    terraform -chdir=stacks/test apply -replace='module.environment.module.storage.digitalocean_spaces_key.app'
    ```
-   Review the plan first; it redeploys the app with the new key. Do test, check it, then prod.
+   Read the plan first: only the key and the app env that uses it should change. Do test, check it, then prod
+   (with the prod values).
 
 ## Restore the database
 
@@ -289,7 +307,7 @@ Terraform state is versioned too (old versions kept 90 days) in `nivis-tfstate`.
 
 ## Logs
 
-Find the app id: `doctl apps list` (or `terraform -chdir=stacks/test output app_id`).
+Find the app id: `doctl apps list` (or `terraform -chdir=stacks/test output app_id` after the [local environment](#local-terraform-environment) setup).
 
 ```bash
 doctl apps logs <app-id> api --type run --follow       # api runtime logs

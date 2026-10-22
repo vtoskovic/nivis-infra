@@ -14,7 +14,7 @@ frontend_branch = "release"
 app = {
   api_instance_size    = "apps-s-1vcpu-1gb-fixed" # $10; move to apps-s-1vcpu-1gb for >1 instance
   api_instance_count   = 1
-  worker_instance_size = "apps-s-1vcpu-1gb" # $10, worker + beat
+  worker_instance_size = "apps-s-1vcpu-1gb" # $12, worker + beat
   worker_concurrency   = 2
 }
 

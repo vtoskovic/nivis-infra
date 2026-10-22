@@ -1,109 +1,190 @@
-# nivis – infrastructure (DigitalOcean + Terraform)
+# nivis-infra: running nivis on DigitalOcean
 
-Terraform for the nivis veterinary lab portal. Two environments, **test** and **prod**, with
-**identical services**: only sizes and retention differ, both are built from the same module and
-shipped by the same pipeline.
+Terraform for the nivis veterinary lab portal. Two environments, **test** and **prod**, with the same
+services: only sizes and retention differ. Both come from the same module and the same pipeline.
+
+This is the operator guide. It is written for one maintainer (you now, or a successor): every routine task is a
+numbered list with the exact commands. If a task is not here, it is not supposed to be done by hand.
 
 ```
-                 ┌──────────────── App Platform app (per environment, region fra) ───────────────┐
- https://<domain>│  /            → frontend  static site, Cloudflare edge CDN (built from GitHub)  │
-  (TLS, CDN)     │  /api /admin  → api       Django + Daphne, image from DOCR                      │
-                 │  /health /static /version                                                       │
-                 │                 worker    Celery worker + beat (single instance)               │
-                 │                 migrate   PRE_DEPLOY job: manage.py migrate                     │
-                 └──────────────────────────────┬─────────────────────────────────────────────────┘
-                                                │ VPC (private)
-                   ┌────────────────────────────┼──────────────────────────┐
-                   │ Managed PostgreSQL 17      │  Managed Valkey 8         │  firewalls: app + VPC only
-                   └────────────────────────────┴──────────────────────────┘
-   Spaces fra1: <env>-documents (private, versioned)   Spaces ams3: <env>-backups (private, versioned)
+                 App Platform app per environment (region fra)
+ https://<host> ─┬─ /api /health /static /version → api       Django + Daphne, image from the registry
+  (TLS + CDN)    │                                  worker    Celery worker + beat, exactly 1 instance
+                 │                                  migrate   PRE_DEPLOY job: manage.py migrate
+                 └─ everything else               → frontend  static site, built by App Platform from GitHub
+                                     │ VPC fra1 (private)
+                 Managed PostgreSQL 17  ·  Managed Valkey 8   (open only to the app and the VPC range)
+   Spaces fra1: nivis-<env>-documents (private, versioned)   Spaces ams3: nivis-<env>-backups (private, versioned)
 ```
+
+## Contents
+
+1. [Layout](#layout)
+2. [Cost](#cost)
+3. [Credentials and secrets](#credentials-and-secrets)
+4. [First-time setup](#first-time-setup)
+5. [Day-to-day](#day-to-day)
+6. [Release, rollback, scale](#release-rollback-scale)
+7. [Rotate a token or key](#rotate-a-token-or-key)
+8. [Restore the database](#restore-the-database)
+9. [Logs](#logs)
+10. [Accepted risk on the Free GitHub plan](#accepted-risk-on-the-free-github-plan)
+11. [Handover checklist](#handover-checklist)
+12. [Open items](#open-items)
 
 ## Layout
 
 ```
-backend.hcl                 shared remote-state settings (Spaces S3 backend, lockfile locking)
-bootstrap/                  one-time: create the state bucket (outside Terraform)
-modules/
-  environment/              composes one full environment – the only module stacks call
-  network/                  VPC
-  postgres/                 cluster, database, least-privilege user, firewall
-  valkey/                   cluster, firewall, cache/broker/result URLs
-  storage/                  documents + backups buckets, lifecycle, CORS, bucket-scoped keys
-  app/                      App Platform app: static site, api, worker, migrate job, routing, alerts
-  monitoring/               uptime check + down / latency / TLS-expiry alerts
-stacks/
-  global/                   container registry, optional DNS zone (account-wide)
-  test/  prod/              identical code; differences live only in terraform.tfvars
-.github/workflows/          checks → PR plan (read-only) → apply global → test → prod (approval)
-docs/app-deploy.example.yml deploy workflow for the application repo
+backend.hcl                  shared remote-state settings (Spaces bucket nivis-tfstate, lockfile locking)
+bootstrap/                   one-time: create the state bucket (outside Terraform)
+modules/                     environment (the only one stacks call), network, postgres, valkey, storage, app, monitoring
+stacks/global/               container registry, optional DNS zone (account-wide)
+stacks/test/  stacks/prod/   identical code; differences live only in terraform.tfvars
+scripts/check.sh             the one quality gate: fmt, validate, module tests, workflow checks, tflint, trivy, gitleaks
+.github/workflows/           terraform.yml (checks, PR plans, apply global then test), terraform-prod.yml (manual prod)
 ```
 
-Conventions: one state file per stack · modules pin provider ranges, stacks commit
-`.terraform.lock.hcl` (linux/darwin/windows hashes) · every variable/output has a description ·
-tfvars contain **no secrets**.
+Rules: one state file per stack; tfvars hold **no secrets**; `prevent_destroy` guards the databases and the documents
+bucket. Run `./scripts/check.sh` before every push; it must end with `CHECK OK` (needs Docker). If it fails on
+files owned by root left by old docker runs, run `rm -rf stacks/*/.terraform` and retry.
 
-## Cost (list prices, per month)
+## Cost
 
-| | test | prod |
+List prices per month.
+
+| Component | test | prod |
 |---|---|---|
-| frontend static site + CDN | $0 | $0 |
-| api | 0.5 GB · $5 | 1 GB fixed · $10 |
-| worker + beat | 0.5 GB · $5 | 0.5 GB · $5 |
-| PostgreSQL 1 GB, 1 node | $15 | $15 |
-| Valkey 1 GB | $15 | $15 |
-| **environment** | **$40** | **$45** |
+| frontend static site | $0 | $0 |
+| api | `apps-s-1vcpu-0.5gb` x1, $5 | `apps-s-1vcpu-1gb-fixed` x1, $10 |
+| worker + beat | `apps-s-1vcpu-1gb` x1, $12 | `apps-s-1vcpu-1gb` x1, $12 |
+| PostgreSQL 17, `db-s-1vcpu-1gb`, 1 node | $15 | $15 |
+| Valkey 8, `db-s-1vcpu-1gb`, 1 node | $15 | $15 |
+| **Environment** | **$47** | **$52** |
 
-Shared: Spaces subscription $5 (all buckets, 250 GiB), registry Starter $0. **≈ $90/month.**
-Scale by editing `stacks/prod/terraform.tfvars` (e.g. `postgres.node_count = 2` for a standby).
+Shared: Spaces $5 (all buckets) + registry Basic $5. **Total about $109/month.**
 
-## Security model – no secrets in git, logs or artifacts
+Monthly check (5 minutes): open DigitalOcean, Billing, compare with $109; look for stray droplets, databases or
+volumes; confirm the billing alert set by the account owner still exists.
 
-| Secret | Created by | Lives in |
+## Credentials and secrets
+
+Nothing secret is in git, tfvars, logs, plan comments or artifacts. Everything below is set once as a GitHub
+**repository secret** (Settings, Secrets and variables, Actions). DigitalOcean has no OIDC for GitHub, so these are
+static credentials: create each with a **1-year expiry** and put the expiry date in your calendar (see
+[Rotate a token or key](#rotate-a-token-or-key)).
+
+| Secret (this repo) | What it is | Used by |
 |---|---|---|
-| DigitalOcean API tokens, Spaces keys for Terraform | human, once | GitHub Environment secrets only |
-| `SECRET_KEY`, `JWT_SIGNING_KEY`, `AUDIT_HMAC_KEY` | `random_password` | state + App Platform (encrypted `SECRET` env) |
-| DB / Valkey passwords | DigitalOcean | state + App Platform `SECRET` env |
-| App Spaces key (documents bucket only) | `digitalocean_spaces_key` | state + App Platform `SECRET` env |
-| Email provider API key | human | GitHub secret `EXTRA_SECRET_ENV` → `TF_VAR_extra_secret_env` |
+| `PLAN_DIGITALOCEAN_TOKEN` | API token, **read-only** scopes plus `database:view_credentials` | PR plans |
+| `PLAN_SPACES_ACCESS_KEY_ID` / `PLAN_SPACES_SECRET_ACCESS_KEY` | Spaces key, read on `nivis-tfstate` and the env buckets | PR plans |
+| `APPLY_DIGITALOCEAN_TOKEN` | API token, custom scopes: app, database, vpc, project, registry, domain, uptime, monitoring | applies |
+| `APPLY_SPACES_ACCESS_KEY_ID` / `APPLY_SPACES_SECRET_ACCESS_KEY` | Spaces key, full access (creates buckets, writes state) | applies |
+| `TEST_EXTRA_SECRET_ENV` | JSON map of app secrets for test | test apply |
+| `PROD_EXTRA_SECRET_ENV` | JSON map of app secrets for prod | prod apply |
 
-- **State is sensitive** (it contains the values above). It lives in a dedicated private,
-  versioned Spaces bucket with lockfile locking; only CI and named operators hold its key.
-  No output exposes a secret, and every secret variable/output is `sensitive = true`.
-- **No plan files are uploaded** as artifacts (binary plans hold secrets in clear text); PR plans
-  show `(sensitive value)` only.
-- **Least privilege**: PR plans run in the `plan` environment with a *read-only* token; applies
-  run in `global`/`test`/`prod` environments, `prod` gated by required reviewers. The app gets a
-  Spaces key scoped to its documents bucket; the backup job a key scoped to the backups bucket.
-- **Network**: PostgreSQL and Valkey accept connections only from the app and the VPC range;
-  TLS is enforced (`sslmode=require`, `rediss://`). `admin_ip_addresses` is empty by default.
-- **Guard rails**: `prevent_destroy` on the database and documents bucket, bucket versioning,
-  gitleaks + trivy + tflint in CI and pre-commit, Dependabot for actions and providers.
+Example value of `TEST_EXTRA_SECRET_ENV` / `PROD_EXTRA_SECRET_ENV` (one line of JSON; later also `SENTRY_DSN`):
+
+```json
+{"RESEND_API_KEY":"re_xxxxxxxxxxxxxxxx"}
+```
+
+In the **app repo** (`nivis`): secrets `TEST_DO_DEPLOY_TOKEN` and `PROD_DO_DEPLOY_TOKEN` (custom scopes: registry
+read/write, app read/update); variables `TEST_APP_ID`, `PROD_APP_ID`, `DO_REGISTRY`.
+
+Notes:
+
+- The exact token scope lists are finalised during the first test apply: start broad on test, narrow until applies
+  still pass, then record the final list **here** (replace this note).
+- The read-only plan token needs `database:view_credentials`. Without it every PR plan shows an app update.
+- The plan Spaces key can only read buckets that exist. After the **first** apply of each environment, grant the plan
+  key read access to the new env buckets (documents in fra1 and backups in ams3) in the DigitalOcean console, then
+  open a PR and confirm the plan refreshes them. If a read grant cannot read bucket configuration, use a full-access
+  key for plans and record that here.
+- Every app env value is a secret to Terraform, so plans show `(sensitive value)` for all of them. To review an env
+  change, do not read the plan: run `terraform -chdir=stacks/test output runtime_env` (non-secret values) and
+  `terraform -chdir=stacks/test output secret_env_keys` (names only) before and after, with the apply credentials
+  exported as `DIGITALOCEAN_TOKEN`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` after
+  `terraform -chdir=stacks/test init -backend-config=../../backend.hcl`.
 
 ## First-time setup
 
-1. **Credentials** (DigitalOcean console → API):
-   - Terraform token (full access or custom scopes for apps, databases, vpc, projects, registry,
-     uptime, domain) and a **read-only** token for PR plans.
-   - Spaces key with full access for Terraform (manages buckets and reads/writes state), and a
-     read-only Spaces key for PR plans.
-   - Deploy token for the app repo: custom scopes `registry` read/write + `app` read/update.
-   - Install the DigitalOcean GitHub app on the application repo (the static site builds from it).
-2. **State bucket**:
-   ```bash
-   export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...   # Terraform Spaces key
-   ./bootstrap/create-state-bucket.sh nivis-tfstate fra1
-   ```
-3. **GitHub Environments** in this repo: `plan` (read-only secrets), `global`, `test`, `prod`
-   (required reviewers). Secrets per environment: `DIGITALOCEAN_TOKEN`, `SPACES_ACCESS_KEY_ID`,
-   `SPACES_SECRET_ACCESS_KEY`, and for test/prod `EXTRA_SECRET_ENV` (JSON map, e.g.
-   `{"POSTMARK_SERVER_TOKEN":"..."}`).
-4. **Fill the TODOs** in `stacks/*/terraform.tfvars` (domains, repo, sender, alert emails).
-5. **Apply** by merging to `main` (or locally: `terraform -chdir=stacks/test init
-   -backend-config=../../backend.hcl && terraform -chdir=stacks/test apply`).
-6. **Database bootstrap (once per environment)**: PostgreSQL 15+ no longer lets new users create
-   objects in `public`, and extensions need an owner. Temporarily add your IP to
-   `admin_ip_addresses`, connect as `doadmin`, run, then remove the IP again:
+Do these in order. The GitHub organization and DigitalOcean team belong to NIVNS (you are Owner on GitHub, Member on
+DigitalOcean); Resend belongs to NIVNS.
+
+### 1. Accounts and repositories
+
+1. Create the GitHub organization (Free plan) and add yourself as Owner. Create two private repos: `nivis` (app) and
+   `nivis-infra` (this repo). Push **`nivis` first**, before any secrets, the GitHub app install or the
+   `github_repo` tfvar.
+2. In DigitalOcean (NIVNS team) create the tokens and Spaces keys from the table above, each with a 1-year expiry.
+   Also create `TEST_DO_DEPLOY_TOKEN` and `PROD_DO_DEPLOY_TOKEN`.
+3. Add every secret from the table to the `nivis-infra` repo, and the deploy tokens to the `nivis` repo.
+4. Install the **DigitalOcean GitHub app** on the `nivis` repo (DigitalOcean console: Apps, Create App, GitHub,
+   authorise and select only `nivis`; then cancel the wizard). The static site is built from that repo, so without
+   the install the first apply fails.
+5. In the `nivis` repo set the variable `DO_REGISTRY` to the registry name (`nivis`, from
+   `stacks/global/terraform.tfvars`).
+
+### 2. State bucket (once, from your machine)
+
+Needs the AWS CLI v2 and the full-access Spaces key (the `APPLY_SPACES_*` one).
+
+```bash
+export AWS_ACCESS_KEY_ID=...   AWS_SECRET_ACCESS_KEY=...
+./bootstrap/create-state-bucket.sh nivis-tfstate fra1
+```
+
+### 3. Fill the tfvars
+
+Edit `stacks/test/terraform.tfvars` and `stacks/prod/terraform.tfvars`: `github_repo` (`<org>/nivis`), `lab` (name,
+short name, address), `default_from_email`, `alert_emails`. Leave `domain = null` until NIVNS decides the hostnames
+(see DNS handoff). Commit via a PR as in [Day-to-day](#day-to-day).
+
+### 4. Bootstrap order, test
+
+The App Platform app waits for its first deployment, so the image and the source branch must exist **before** the
+first test apply.
+
+1. Merge to `main`: `terraform.yml` applies `global` (registry) first, then tries `test`. If `test` fails because
+   the image or branch does not exist, that is expected; carry on.
+2. In the `nivis` repo: Actions, **deploy**, Run workflow on `main`. It builds and pushes `backend:<sha>` and
+   `backend:test`, creates the `test` branch, and skips the deployment while `TEST_APP_ID` is unset.
+3. In `nivis-infra`: Actions, **terraform**, re-run the failed `apply-test` job (or push any small change to `main`).
+4. Open the finished job's **summary**. It lists `app_id` and `default_ingress`. Copy `app_id` into the `nivis` repo
+   variable `TEST_APP_ID` (Settings, Secrets and variables, Actions, Variables).
+5. Open the `default_ingress` URL and check the app loads.
+
+### 5. Checks on test before prod
+
+- Read the real `X-Forwarded-For` chain behind App Platform and set `num_proxies` in the tfvars to match.
+- Confirm the public-URL envs resolve at runtime: `terraform output runtime_env` shows the `${APP_URL}` /
+  `${APP_DOMAIN}` bindables; log in through the default URL and check there are no CORS or CSRF errors.
+- Right after an apply, a PR plan for test says "No changes".
+- Confirm the static-site build did not need an API URL (the SPA calls `/api` on the same host).
+- Enable registry garbage collection (DigitalOcean console, Container Registry, Settings); keep the last 10 `v*` tags
+  and the moving `test`/`prod` tags.
+- Once the Resend sending domain is verified (needs the DNS records from IT), send one email of each type and
+  confirm SPF and DKIM pass. Until then email on test is expected to fail; the app retries.
+
+### 6. Bootstrap order, prod
+
+Same idea, with the first release tag.
+
+1. In `nivis`: `git tag v0.1.0 && git push --tags` (on a commit of `main`). The deploy workflow re-tags the image as
+   `:prod`, creates the `release` branch and skips the deployment while `PROD_APP_ID` is unset.
+2. In `nivis-infra`: Actions, **terraform-prod**, Run workflow (branch `main`).
+3. Copy `app_id` from that job's summary into the `nivis` repo variable `PROD_APP_ID`.
+
+### 7. Database one-time SQL (once per environment)
+
+PostgreSQL 15+ stops new users creating objects in `public`, and extensions need an owner. Temporarily add your IP,
+connect as `doadmin`, run the SQL, then remove the IP.
+
+1. Set `admin_ip_addresses = ["<your.public.ip>/32"]` in the stack's tfvars, PR, merge (test applies; for prod run
+   terraform-prod).
+2. Get the connection string: `doctl databases list`, then `doctl databases connection <cluster-id>` (use the
+   `doadmin` URI, port 25060).
+3. Connect with `psql "<doadmin URI>"` and run:
    ```sql
    ALTER DATABASE nivis OWNER TO nivis;
    \c nivis
@@ -111,30 +192,146 @@ Scale by editing `stacks/prod/terraform.tfvars` (e.g. `postgres.node_count = 2` 
    CREATE EXTENSION IF NOT EXISTS pg_trgm;
    CREATE EXTENSION IF NOT EXISTS btree_gist;
    ```
-7. **App repo**: copy `docs/app-deploy.example.yml` to `nivis/.github/workflows/deploy.yml`, set
-   `APP_ID` (`terraform output app_id`) and `DIGITALOCEAN_DEPLOY_TOKEN` in its test/prod
-   environments. Push an image tagged `:test` before the first deployment succeeds.
+4. Remove `admin_ip_addresses` again (back to `[]`), PR, merge/apply.
+5. Redeploy the app (see Release) so `migrate` runs against the prepared database.
+
+### 8. DNS handoff (when NIVNS decides the hostnames)
+
+Both environments run on their `nivis-<env>-xxxx.ondigitalocean.app` address until then. DNS stays with NIVNS IT.
+
+1. Send IT one request per environment: a **CNAME** with **TTL 300**:
+   ```
+   portal.<nivns-domain>.        300  IN CNAME  <prod default_ingress host>.
+   portal-test.<nivns-domain>.   300  IN CNAME  <test default_ingress host>.
+   ```
+   The host is the `default_ingress` value from the apply summary, without `https://`. Ask IT to check the domain's
+   CAA records (if any): they must allow **Let's Encrypt** (`0 issue "letsencrypt.org"`).
+2. When IT confirms the records, set `domain = "portal-test.<nivns-domain>"` in `stacks/test/terraform.tfvars` (prod
+   likewise), PR, merge. One apply, no other change: the app's URL settings follow the domain automatically.
+3. App Platform issues and renews the certificate. Check `live_url` with `terraform output live_url`.
 
 ## Day-to-day
 
-- **Infrastructure change**: PR → checks + plan comment per stack → merge → global and test apply
-  automatically → prod applies after approval.
-- **Code release**: merge to `main` in nivis → image `:test` → test deploys. Tag `vX.Y.Z` →
-  approval → the same image becomes `:prod`, `release` moves to the tag → prod deploys.
+**Change infrastructure.**
+
+1. `git switch -c my-change`, edit, `./scripts/check.sh` (must print `CHECK OK`), push, open a PR.
+2. The PR shows checks and one plan comment per stack (global, test, prod). Read them.
+3. Merge to `main`: `global` then `test` apply automatically.
+4. **Prod**: GitHub, Actions, **terraform-prod**, **Run workflow** (branch `main`). It plans and applies prod. Do this
+   only after reading the prod plan in the merged PR. It refuses to run from any other branch.
+
+Two applies at once on the same stack are safe: the second waits on the Spaces lockfile.
+
+## Release, rollback, scale
+
+**Release the app.**
+
+- Test: every merge to `main` in `nivis` deploys to test (image `:test`, `test` branch).
+- Prod: in `nivis`, on a commit of `main`:
+  ```bash
+  git tag vX.Y.Z && git push --tags
+  ```
+  The same already-built image becomes `:prod` and `:vX.Y.Z`, the `release` branch moves to the tag, prod deploys.
+
+**Roll back.** Before go-live the no-cleanup policy applies (just fix forward).
+
+1. In `nivis`: Actions, **deploy**, re-run the workflow for the previous good tag (or, on test, for the last good
+   commit). The image is not rebuilt.
+2. After go-live, a release whose migration is **not backward-compatible** cannot be rolled back this way: restore the
+   database from a point-in-time backup instead (see [Restore the database](#restore-the-database)), then redeploy
+   the previous tag.
+
+**Scale.** Sizes are tfvars: edit `app.api_instance_size`, `app.api_instance_count`, `app.worker_instance_size`,
+`postgres.size`, `postgres.node_count` (2 adds a standby, +$15), `valkey.*` in `stacks/<env>/terraform.tfvars`, then
+follow Day-to-day. Keep **one** worker instance: it runs the Celery beat scheduler. Update the cost table above.
+
+## Rotate a token or key
+
+Do this for every secret before its 1-year expiry, and on handover.
+
+1. Create the new token or Spaces key in DigitalOcean with the same scopes and a 1-year expiry.
+2. Replace the matching GitHub secret (infra repo for `PLAN_*` and `APPLY_*`; app repo for `*_DO_DEPLOY_TOKEN`).
+3. Run a workflow that uses it (open a PR for the plan secrets; Run workflow for deploy and apply secrets) and check
+   it passes.
+4. Delete the old token or key in DigitalOcean.
+5. App secrets from `*_EXTRA_SECRET_ENV` (e.g. `RESEND_API_KEY`): create the new key at the provider, update the
+   GitHub secret, merge any change (test) or Run workflow terraform-prod (prod), then revoke the old key.
+6. The app's own Spaces keys (documents and backups) are Terraform resources (`digitalocean_spaces_key.app` and
+   `.backup` in the storage module). To rotate one, apply with `-replace` from your machine, with the apply
+   credentials exported:
+   ```bash
+   terraform -chdir=stacks/test init -backend-config=../../backend.hcl
+   terraform -chdir=stacks/test apply -replace='module.environment.module.storage.digitalocean_spaces_key.app'
+   ```
+   Review the plan first; it redeploys the app with the new key. Do test, check it, then prod.
+
+## Restore the database
+
+Managed PostgreSQL keeps daily backups with 7-day point-in-time recovery. A restore **creates a new cluster**; the
+Terraform-managed cluster is never swapped, so state does not change. Copy the data back instead.
+
+1. DigitalOcean console, Databases, the env's cluster, Backups, **Restore from backup** to a new cluster
+   (`nivis-<env>-restore`), choosing the point in time. Wait until it is online.
+2. Add your IP temporarily to `admin_ip_addresses` (as in the one-time SQL) so you can reach the Terraform-managed
+   cluster, and to the restore cluster's trusted sources in the console.
+3. Get both connection strings: `doctl databases list`, then `doctl databases connection <cluster-id>`.
+4. Stop writes: scale the worker and api down to 0 via the console, or accept a short window of users reading only.
+5. Copy:
+   ```bash
+   pg_dump --format=custom --no-owner --dbname "<restore cluster doadmin URI for nivis>" -f nivis.dump
+   pg_restore --clean --if-exists --no-owner --role=nivis --dbname "<managed cluster doadmin URI for nivis>" nivis.dump
+   ```
+6. Check the app, remove the temporary IP from tfvars (PR, apply), delete the restore cluster in the console, delete
+   `nivis.dump`.
+
+The documents bucket is versioned: an overwritten or deleted document can be recovered from its previous version.
+Terraform state is versioned too (old versions kept 90 days) in `nivis-tfstate`.
+
+## Logs
+
+Find the app id: `doctl apps list` (or `terraform -chdir=stacks/test output app_id`).
+
+```bash
+doctl apps logs <app-id> api --type run --follow       # api runtime logs
+doctl apps logs <app-id> worker --type run --follow    # celery worker + beat
+doctl apps logs <app-id> migrate --type run            # the PRE_DEPLOY migrate job
+doctl apps logs <app-id> api --type build              # build logs
+doctl apps list-deployments <app-id>                   # recent deployments and phases
+```
+
+The uptime check on `live_url` emails `alert_emails` when the site is down, slow or its certificate is about to expire.
+
+## Accepted risk on the Free GitHub plan
+
+The Free plan has no Environments and no required reviewers. Repository secrets, including `APPLY_*`, are readable by
+any workflow on any branch. Prod is gated by an explicit **Run workflow** button on `main`, re-checked inside the
+reusable apply workflow, but a branch that edits both workflow files could still use the apply credentials. This is
+accepted because you are the only writer and use 2FA. Dependabot PRs get no secrets, so their plans are skipped.
+
+**Removing the risk:** upgrade the organization to GitHub **Team** ($4 per user per month, recommended before
+go-live). Then move the `APPLY_*`, `*_EXTRA_SECRET_ENV` and `PROD_DO_DEPLOY_TOKEN` secrets into protected
+Environments with required reviewers, and add a ruleset for `v*` tags. No other change is needed.
+
+## Handover checklist
+
+1. Add the successor as GitHub org Owner and DigitalOcean team member (with the roles they need).
+2. Rotate **every** token and key in [Credentials and secrets](#credentials-and-secrets), including the Resend key
+   and (later) the Sentry DSN. Tokens are tied to the person who created them: delete the old ones.
+3. Confirm the DigitalOcean billing alert and the `alert_emails` recipients are the right people.
+4. Transfer ownership of the GitHub repos, the DigitalOcean team and the Resend account to NIVNS if not already.
+5. Walk the successor through one release to test, one prod release, and the restore section.
+6. Record the final token scope lists in this README.
 
 ## Open items
 
-- **Email provider** is not wired yet: set `extra_env.EMAIL_BACKEND` and the provider key in
-  `EXTRA_SECRET_ENV`. The app currently defaults to Amazon SES, which would need an AWS account
-  (and its `AWS_*` variables collide with the Spaces credentials) – Postmark or Brevo via anymail
-  is simpler.
-- **Backups beyond 7 days**: managed PostgreSQL gives daily backups + 7-day PITR. The backups
-  bucket and its scoped key exist; the nightly `pg_dump` job still has to be added to the app.
-- **Cross-region copy of documents** (fra1 → ams3) needs a scheduled sync job; Spaces has no
-  native replication.
-- **Registry Starter** has limited storage; enable garbage collection or move to Basic ($5) if
-  pushes start failing.
-- **`NUM_PROXIES`**: confirm the real X-Forwarded-For hop count behind App Platform after the
-  first deploy (default 1).
-- **Test teardown**: `prevent_destroy` also applies to test; remove it deliberately if test must
-  be destroyed.
+Outside this repo, tracked and not built here:
+
+- **First data in a fresh environment**: species, places, units, areas, tiers and roles arrive with `migrate`. The
+  institute catalogue (`catalog/data/institute/*.csv`) and the first lab admin account do not. To decide: a one-time
+  loader command, or the app's import screens plus `createsuperuser`.
+- **Resend split between test and prod**: sender address, account and the shared free quota (100/day).
+- Nightly `pg_dump` to the backups bucket (managed backups give 7-day PITR until then); document purge job;
+  cross-region document copy; Resend bounce handling; Sentry SDK.
+- Final hostnames and the NIVNS domain name.
+- GitHub Team upgrade before go-live.
+- Final token scope lists (see Credentials and secrets).

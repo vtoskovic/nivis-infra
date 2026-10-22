@@ -22,3 +22,13 @@ output "backups_bucket" {
   description = "Backups bucket."
   value       = module.environment.backups_bucket
 }
+
+output "runtime_env" {
+  description = "Non-secret env vars as sent to the app. Review env changes here: plans show every app env value as (sensitive value)."
+  value       = module.environment.runtime_env
+}
+
+output "secret_env_keys" {
+  description = "Names (never values) of the secret env vars sent to the app."
+  value       = module.environment.secret_env_keys
+}

@@ -13,7 +13,7 @@ frontend_branch = "test"
 app = {
   api_instance_size    = "apps-s-1vcpu-0.5gb" # $5
   api_instance_count   = 1
-  worker_instance_size = "apps-s-1vcpu-1gb" # $10, worker + beat
+  worker_instance_size = "apps-s-1vcpu-1gb" # $12, worker + beat
   worker_concurrency   = 2
 }
 

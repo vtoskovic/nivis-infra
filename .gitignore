@@ -27,3 +27,7 @@ terraform.rc
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Check gate working data
+.tfcache/
+modules/*/.terraform.lock.hcl

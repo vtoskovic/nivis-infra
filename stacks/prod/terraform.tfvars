@@ -2,16 +2,19 @@
 # Scale up by editing sizes here; every change goes through the same reviewed pipeline.
 environment  = "prod"
 vpc_ip_range = "10.120.0.0/20"
+num_proxies  = 1 # verify on test (Part C)
 
-domain          = "portal.example.rs" # TODO: real hostname
-dns_zone        = null                # set to the apex zone if DNS is hosted on DigitalOcean
-github_repo     = "CHANGE-ME/nivis"   # TODO: owner/repo
+lab = { name = "TODO", short_name = "NIVNS", address = "TODO" } # TODO: NIVNS
+
+domain          = null              # TODO: NIVNS hostname, then set it here
+dns_zone        = null              # set to the apex zone if DNS is hosted on DigitalOcean
+github_repo     = "CHANGE-ME/nivis" # TODO: owner/repo
 frontend_branch = "release"
 
 app = {
   api_instance_size    = "apps-s-1vcpu-1gb-fixed" # $10; move to apps-s-1vcpu-1gb for >1 instance
   api_instance_count   = 1
-  worker_instance_size = "apps-s-1vcpu-0.5gb" # $5, worker + beat
+  worker_instance_size = "apps-s-1vcpu-1gb" # $10, worker + beat
   worker_concurrency   = 2
 }
 

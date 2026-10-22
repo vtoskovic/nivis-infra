@@ -1,0 +1,146 @@
+name: terraform
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.13.4"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  # ------------------------------------------------------------------------------------------
+  # Static checks: no credentials involved.
+  # ------------------------------------------------------------------------------------------
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Format
+        run: terraform fmt -check -recursive -diff
+
+      - name: Validate
+        run: |
+          for stack in stacks/*/; do
+            echo "::group::$stack"
+            terraform -chdir="$stack" init -backend=false
+            terraform -chdir="$stack" validate
+            echo "::endgroup::"
+          done
+
+      - uses: terraform-linters/setup-tflint@v4
+      - name: TFLint
+        run: |
+          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+          tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl"
+
+      - name: Trivy (IaC misconfiguration)
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: config
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+  # ------------------------------------------------------------------------------------------
+  # Pull requests: plan every stack with a READ-ONLY DigitalOcean token and post the result.
+  # ------------------------------------------------------------------------------------------
+  plan:
+    if: github.event_name == 'pull_request'
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: plan
+    permissions:
+      contents: read
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [global, test, prod]
+    concurrency:
+      group: tf-plan-${{ matrix.stack }}-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      SPACES_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+      SPACES_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Init
+        run: terraform -chdir=stacks/${{ matrix.stack }} init -backend-config=../../backend.hcl
+
+      # Secret values are marked sensitive and render as (sensitive value). No plan file is
+      # uploaded as an artifact: binary plans contain secrets in clear text.
+      - name: Plan
+        id: plan
+        run: |
+          set -o pipefail
+          terraform -chdir=stacks/${{ matrix.stack }} plan -lock=false -no-color -detailed-exitcode \
+            | tee plan.txt || code=$?
+          echo "exitcode=${code:-0}" >> "$GITHUB_OUTPUT"
+          [ "${code:-0}" -ne 1 ]
+
+      - name: Comment
+        uses: actions/github-script@v7
+        env:
+          STACK: ${{ matrix.stack }}
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('plan.txt', 'utf8');
+            const summary = body.split('\n').filter(l => /^(Plan:|No changes)/.test(l)).join('\n') || 'see run log';
+            const trimmed = body.length > 60000 ? body.slice(-60000) : body;
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: `### terraform plan – \`${process.env.STACK}\`\n**${summary}**\n<details><summary>Show plan</summary>\n\n\`\`\`\n${trimmed}\n\`\`\`\n</details>`,
+            });
+
+  # ------------------------------------------------------------------------------------------
+  # main: global -> test (automatic) -> prod (manual approval on the "prod" environment).
+  # ------------------------------------------------------------------------------------------
+  apply-global:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: checks
+    uses: ./.github/workflows/_apply.yml
+    with:
+      stack: global
+    secrets: inherit
+
+  apply-test:
+    needs: apply-global
+    uses: ./.github/workflows/_apply.yml
+    with:
+      stack: test
+    secrets: inherit
+
+  apply-prod:
+    needs: apply-test
+    uses: ./.github/workflows/_apply.yml
+    with:
+      stack: prod
+    secrets: inherit

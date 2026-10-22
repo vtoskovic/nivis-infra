@@ -1,0 +1,51 @@
+name: terraform-apply
+
+# Reusable: plan + apply one stack inside its GitHub Environment. Environment protection rules
+# (required reviewers on "prod") gate the job before any secret is exposed to it.
+on:
+  workflow_call:
+    inputs:
+      stack:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.stack }}
+    concurrency:
+      group: tf-apply-${{ inputs.stack }}
+      cancel-in-progress: false
+    env:
+      TF_VERSION: "1.13.4"
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      SPACES_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+      SPACES_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+      TF_VAR_extra_secret_env: ${{ secrets.EXTRA_SECRET_ENV || '{}' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Init
+        run: terraform -chdir=stacks/${{ inputs.stack }} init -backend-config=../../backend.hcl
+
+      - name: Plan
+        run: terraform -chdir=stacks/${{ inputs.stack }} plan -no-color -out=tfplan
+
+      - name: Apply
+        run: terraform -chdir=stacks/${{ inputs.stack }} apply -no-color tfplan
+
+      - name: Remove plan file
+        if: always()
+        run: rm -f stacks/${{ inputs.stack }}/tfplan

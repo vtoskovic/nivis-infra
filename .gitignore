@@ -1,0 +1,29 @@
+# Terraform working data
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.plan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Anything that could carry secrets. Committed *.tfvars hold non-secret values only.
+*.secret.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+.env
+.env.*
+*.pem
+*.key
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

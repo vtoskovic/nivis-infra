@@ -1,0 +1,9 @@
+# Extend the default rules; allow only the known false positive (instance size slugs such as
+# api_instance_size = "apps-s-1vcpu-1gb" match the generic-api-key rule).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "App Platform instance size slugs"
+regexTarget = "line"
+regexes = ['''api_instance_size\s*=\s*"apps-[a-z0-9.-]+"''']

@@ -4,7 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,58 +14,23 @@ env:
   TF_INPUT: "false"
 
 jobs:
-  # ------------------------------------------------------------------------------------------
-  # Static checks: no credentials involved.
-  # ------------------------------------------------------------------------------------------
+  # Static checks: no credentials involved. check.sh runs fmt, validate, module tests, tflint,
+  # trivy, gitleaks and actionlint in Docker (preinstalled on GitHub runners).
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Format
-        run: terraform fmt -check -recursive -diff
-
-      - name: Validate
-        run: |
-          for stack in stacks/*/; do
-            echo "::group::$stack"
-            terraform -chdir="$stack" init -backend=false
-            terraform -chdir="$stack" validate
-            echo "::endgroup::"
-          done
-
-      - uses: terraform-linters/setup-tflint@v4
-      - name: TFLint
-        run: |
-          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
-          tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl"
-
-      - name: Trivy (IaC misconfiguration)
-        uses: aquasecurity/trivy-action@0.33.1
-        with:
-          scan-type: config
-          severity: HIGH,CRITICAL
-          exit-code: "1"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Quality gate
+        run: ./scripts/check.sh
 
   # ------------------------------------------------------------------------------------------
-  # Pull requests: plan every stack with a READ-ONLY DigitalOcean token and post the result.
+  # Pull requests: plan every stack with READ-ONLY credentials and post the result.
+  # Dependabot PRs get no secrets, so they are skipped (checks still run).
   # ------------------------------------------------------------------------------------------
   plan:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
     needs: checks
     runs-on: ubuntu-latest
-    environment: plan
     permissions:
       contents: read
       pull-requests: write
@@ -78,14 +42,14 @@ jobs:
       group: tf-plan-${{ matrix.stack }}-${{ github.ref }}
       cancel-in-progress: true
     env:
-      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-      SPACES_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
-      SPACES_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+      DIGITALOCEAN_TOKEN: ${{ secrets.PLAN_DIGITALOCEAN_TOKEN }}
+      SPACES_ACCESS_KEY_ID: ${{ secrets.PLAN_SPACES_ACCESS_KEY_ID }}
+      SPACES_SECRET_ACCESS_KEY: ${{ secrets.PLAN_SPACES_SECRET_ACCESS_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.PLAN_SPACES_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.PLAN_SPACES_SECRET_ACCESS_KEY }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
@@ -105,7 +69,7 @@ jobs:
           [ "${code:-0}" -ne 1 ]
 
       - name: Comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           STACK: ${{ matrix.stack }}
         with:
@@ -121,10 +85,10 @@ jobs:
             });
 
   # ------------------------------------------------------------------------------------------
-  # main: global -> test (automatic) -> prod (manual approval on the "prod" environment).
+  # main: global -> test. Prod is applied only by terraform-prod.yml (manual dispatch).
   # ------------------------------------------------------------------------------------------
   apply-global:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: checks
     uses: ./.github/workflows/_apply.yml
     with:
@@ -136,11 +100,4 @@ jobs:
     uses: ./.github/workflows/_apply.yml
     with:
       stack: test
-    secrets: inherit
-
-  apply-prod:
-    needs: apply-test
-    uses: ./.github/workflows/_apply.yml
-    with:
-      stack: prod
     secrets: inherit

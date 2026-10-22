@@ -40,6 +40,34 @@ if grep -rq cors_configuration modules/storage; then
   exit 1
 fi
 
+echo "== workflows (Task A6: Free plan, no Environments, pinned actions)"
+wf_fail=0
+wf_expect() { echo "WORKFLOW CHECK FAILED: $1" >&2; wf_fail=1; }
+if grep -rEn '^[[:space:]]*environment:' .github/workflows; then
+  wf_expect "no 'environment:' key is allowed (GitHub Free has no Environments)"
+fi
+grep -Eq '^on:' .github/workflows/terraform-prod.yml 2>/dev/null &&
+  grep -Eq '^  workflow_dispatch:' .github/workflows/terraform-prod.yml ||
+  wf_expect "terraform-prod.yml must be triggered by workflow_dispatch"
+if [ -f .github/workflows/terraform-prod.yml ] && grep -Eq '^  (push|pull_request|schedule):' .github/workflows/terraform-prod.yml; then
+  wf_expect "terraform-prod.yml must be workflow_dispatch only"
+fi
+grep -Eq "if: github\.ref == 'refs/heads/main'" .github/workflows/terraform-prod.yml 2>/dev/null ||
+  wf_expect "terraform-prod.yml job must have if: github.ref == 'refs/heads/main'"
+if grep -En 'stack: *prod' .github/workflows/terraform.yml; then
+  wf_expect "terraform.yml must apply only global and test"
+fi
+grep -Eq 'stack: *global' .github/workflows/terraform.yml 2>/dev/null &&
+  grep -Eq 'stack: *test' .github/workflows/terraform.yml ||
+  wf_expect "terraform.yml must apply global and test"
+unpinned=$(grep -rhE '^[[:space:]-]*uses:' .github/workflows | grep -v 'uses: \./' | grep -Ev '@[0-9a-f]{40}( |$)' || true)
+if [ -n "$unpinned" ]; then
+  echo "$unpinned" >&2
+  wf_expect "every uses: must be pinned to a 40-character commit SHA"
+fi
+[ "$wf_fail" -eq 0 ] || exit 1
+run rhysd/actionlint:latest
+
 echo "== tfvars expected values (Task A5: spec sizes, branches, registry tier)"
 tfvars_fail=0
 # expect FILE KEY RHS: the file must contain a line "KEY = RHS" (RHS taken literally).

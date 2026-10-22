@@ -1,7 +1,8 @@
 name: terraform-apply
 
-# Reusable: plan + apply one stack inside its GitHub Environment. Environment protection rules
-# (required reviewers on "prod") gate the job before any secret is exposed to it.
+# Reusable: plan + apply one stack. GitHub Free has no Environments, so the APPLY_* repository
+# secrets are available to any workflow; prod is gated by terraform-prod.yml (manual dispatch on
+# main only) and re-checked in the first step below. See the operator guide (accepted risk).
 on:
   workflow_call:
     inputs:
@@ -15,7 +16,6 @@ permissions:
 jobs:
   apply:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.stack }}
     concurrency:
       group: tf-apply-${{ inputs.stack }}
       cancel-in-progress: false
@@ -23,16 +23,22 @@ jobs:
       TF_VERSION: "1.13.4"
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
-      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-      SPACES_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
-      SPACES_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
-      TF_VAR_extra_secret_env: ${{ secrets.EXTRA_SECRET_ENV || '{}' }}
+      DIGITALOCEAN_TOKEN: ${{ secrets.APPLY_DIGITALOCEAN_TOKEN }}
+      SPACES_ACCESS_KEY_ID: ${{ secrets.APPLY_SPACES_ACCESS_KEY_ID }}
+      SPACES_SECRET_ACCESS_KEY: ${{ secrets.APPLY_SPACES_SECRET_ACCESS_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.APPLY_SPACES_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.APPLY_SPACES_SECRET_ACCESS_KEY }}
+      TF_VAR_extra_secret_env: ${{ inputs.stack == 'prod' && secrets.PROD_EXTRA_SECRET_ENV || inputs.stack == 'test' && secrets.TEST_EXTRA_SECRET_ENV || '{}' }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Guard prod to main
+        if: inputs.stack == 'prod' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::prod can only be applied from refs/heads/main (got $GITHUB_REF)"
+          exit 1
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
@@ -45,6 +51,15 @@ jobs:
 
       - name: Apply
         run: terraform -chdir=stacks/${{ inputs.stack }} apply -no-color tfplan
+
+      - name: Summary (app id and ingress)
+        if: inputs.stack == 'test' || inputs.stack == 'prod'
+        run: |
+          {
+            echo "### ${{ inputs.stack }}"
+            echo "- app_id: $(terraform -chdir=stacks/${{ inputs.stack }} output -raw app_id)"
+            echo "- default_ingress: $(terraform -chdir=stacks/${{ inputs.stack }} output -raw default_ingress)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove plan file
         if: always()

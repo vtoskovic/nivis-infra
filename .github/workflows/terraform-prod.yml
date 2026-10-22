@@ -1,0 +1,16 @@
+name: terraform-prod
+
+# Manual prod apply. Run workflow on main after reviewing the prod plan in the merged PR.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apply-prod:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/_apply.yml
+    with:
+      stack: prod
+    secrets: inherit

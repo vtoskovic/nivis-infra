@@ -30,11 +30,6 @@ variable "dns_zone" {
   default     = null
 }
 
-variable "public_url" {
-  description = "Public base URL (https://...) baked into the SPA build."
-  type        = string
-}
-
 variable "github_repo" {
   description = "GitHub repository of the app, \"owner/name\". The DigitalOcean GitHub app must have access."
   type        = string
@@ -86,7 +81,7 @@ variable "job_instance_size" {
 variable "backend_path_prefixes" {
   description = "URL prefixes routed to the api; everything else goes to the SPA."
   type        = list(string)
-  default     = ["/api", "/admin", "/health", "/static", "/version"]
+  default     = ["/api", "/health", "/static", "/version"]
 }
 
 variable "env" {

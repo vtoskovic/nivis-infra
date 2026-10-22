@@ -91,13 +91,6 @@ resource "digitalocean_app" "this" {
         branch         = var.frontend_branch
         deploy_on_push = false
       }
-
-      env {
-        key   = "VITE_API_BASE_URL"
-        value = var.public_url
-        scope = "BUILD_TIME"
-        type  = "GENERAL"
-      }
     }
 
     # --- API: Django on Daphne ------------------------------------------------------------------
@@ -164,13 +157,6 @@ resource "digitalocean_app" "this" {
         tag           = local.image.tag
       }
 
-      env {
-        key   = "SKIP_COLLECTSTATIC"
-        value = "true"
-        scope = "RUN_TIME"
-        type  = "GENERAL"
-      }
-
       alert {
         rule     = "RESTART_COUNT"
         operator = "GREATER_THAN"
@@ -194,13 +180,6 @@ resource "digitalocean_app" "this" {
 
       env {
         key   = "MIGRATIONS_ON_STARTUP"
-        value = "true"
-        scope = "RUN_TIME"
-        type  = "GENERAL"
-      }
-
-      env {
-        key   = "SKIP_COLLECTSTATIC"
         value = "true"
         scope = "RUN_TIME"
         type  = "GENERAL"

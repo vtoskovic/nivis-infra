@@ -94,7 +94,6 @@ module "app" {
   vpc_id               = module.network.vpc_id
   domain               = var.domain
   dns_zone             = var.dns_zone
-  public_url           = local.public_url
   github_repo          = var.github_repo
   frontend_branch      = var.frontend_branch
   image_repository     = var.image_repository

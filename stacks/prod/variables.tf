@@ -11,8 +11,9 @@ variable "vpc_ip_range" {
 }
 
 variable "domain" {
-  description = "Public hostname of this environment."
+  description = "Public hostname of this environment, or null."
   type        = string
+  default     = null
 }
 
 variable "dns_zone" {
@@ -70,6 +71,26 @@ variable "storage" {
 variable "default_from_email" {
   description = "Sender address for outgoing email."
   type        = string
+}
+
+variable "num_proxies" {
+  description = "Trusted X-Forwarded-For hops in front of Django."
+  type        = number
+}
+
+variable "lab" {
+  description = "Laboratory identity."
+  type = object({
+    name       = string
+    short_name = string
+    address    = string
+  })
+}
+
+variable "email_backend" {
+  description = "Django email backend class."
+  type        = string
+  default     = "anymail.backends.resend.EmailBackend"
 }
 
 variable "hsts_seconds" {

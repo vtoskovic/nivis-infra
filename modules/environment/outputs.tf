@@ -3,9 +3,19 @@ output "app_id" {
   value       = module.app.app_id
 }
 
-output "public_url" {
-  description = "Public URL of this environment."
-  value       = local.public_url
+output "live_url" {
+  description = "Live URL of this environment (custom domain once verified, else the default ingress)."
+  value       = module.app.live_url
+}
+
+output "runtime_env" {
+  description = "Non-secret env vars as sent to the app."
+  value       = merge(local.runtime_env, var.extra_env)
+}
+
+output "secret_env_keys" {
+  description = "Names (never values) of the secret env vars sent to the app."
+  value       = nonsensitive(sort(keys(local.secret_env)))
 }
 
 output "default_ingress" {

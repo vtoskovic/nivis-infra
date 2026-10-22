@@ -3,9 +3,9 @@ output "app_id" {
   value       = module.environment.app_id
 }
 
-output "public_url" {
-  description = "Public URL."
-  value       = module.environment.public_url
+output "live_url" {
+  description = "Live URL."
+  value       = module.environment.live_url
 }
 
 output "default_ingress" {

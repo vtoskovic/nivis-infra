@@ -3,8 +3,47 @@
 
 locals {
   name_prefix = "nivis-${var.environment}"
-  public_url  = "https://${var.domain}"
   tags        = ["nivis", "env-${var.environment}", "managed-by-terraform"]
+
+  # Non-secret env sent to the app. URL envs use App Platform bindables so no hostname is hard-coded.
+  runtime_env = {
+    DEBUG                  = "False"
+    TIME_ZONE              = "Europe/Belgrade"
+    ALLOWED_HOSTS          = "$${APP_DOMAIN}"
+    FRONTEND_URL           = "$${APP_URL}"
+    BACKEND_PUBLIC_URL     = "$${APP_URL}"
+    CSRF_TRUSTED_ORIGINS   = "$${APP_URL}"
+    CORS_ALLOWED_ORIGINS   = "$${APP_URL}"
+    DEFAULT_FROM_EMAIL     = var.default_from_email
+    NUM_PROXIES            = tostring(var.num_proxies)
+    SECURE_HSTS_SECONDS    = tostring(var.hsts_seconds)
+    S3_BUCKET              = module.storage.documents_bucket
+    S3_ENDPOINT_URL        = "https://${var.region}.digitaloceanspaces.com"
+    S3_PUBLIC_ENDPOINT_URL = "https://${var.region}.digitaloceanspaces.com"
+    S3_ADDRESSING_STYLE    = "virtual"
+    AWS_S3_REGION_NAME     = var.region
+    EMAIL_BACKEND          = var.email_backend
+    LAB_NAME               = var.lab.name
+    LAB_SHORT_NAME         = var.lab.short_name
+    LAB_ADDRESS            = var.lab.address
+    SENTRY_ENVIRONMENT     = var.environment
+    LOG_LEVEL              = "INFO"
+  }
+
+  secret_env = merge(
+    {
+      SECRET_KEY            = random_password.django_secret_key.result
+      JWT_SIGNING_KEY       = random_password.jwt_signing_key.result
+      AUDIT_HMAC_KEY        = random_password.audit_hmac_key.result
+      DATABASE_URL          = module.postgres.database_url
+      REDIS_URL             = module.valkey.cache_url
+      CELERY_BROKER_URL     = module.valkey.broker_url
+      CELERY_RESULT_BACKEND = module.valkey.result_backend_url
+      AWS_ACCESS_KEY_ID     = module.storage.app_access_key
+      AWS_SECRET_ACCESS_KEY = module.storage.app_secret_key
+    },
+    var.extra_secret_env,
+  )
 }
 
 resource "digitalocean_project" "this" {
@@ -103,48 +142,14 @@ module "app" {
   worker_concurrency   = var.app.worker_concurrency
   alert_emails         = var.alert_emails
 
-  env = merge(
-    {
-      DEBUG                = "False"
-      TIME_ZONE            = "Europe/Belgrade"
-      ALLOWED_HOSTS        = var.domain
-      FRONTEND_URL         = local.public_url
-      BACKEND_PUBLIC_URL   = local.public_url
-      CSRF_TRUSTED_ORIGINS = local.public_url
-      CORS_ALLOWED_ORIGINS = local.public_url
-      DEFAULT_FROM_EMAIL   = var.default_from_email
-      NUM_PROXIES          = tostring(var.num_proxies)
-      SECURE_SSL_REDIRECT  = "True"
-      SECURE_HSTS_SECONDS  = tostring(var.hsts_seconds)
-      S3_BUCKET            = module.storage.documents_bucket
-      S3_ENDPOINT_URL      = module.storage.documents_endpoint
-      AWS_S3_REGION_NAME   = var.region
-      SENTRY_ENVIRONMENT   = var.environment
-      LOG_LEVEL            = "INFO"
-    },
-    var.extra_env,
-  )
-
-  secret_env = merge(
-    {
-      SECRET_KEY            = random_password.django_secret_key.result
-      JWT_SIGNING_KEY       = random_password.jwt_signing_key.result
-      AUDIT_HMAC_KEY        = random_password.audit_hmac_key.result
-      DATABASE_URL          = module.postgres.database_url
-      REDIS_URL             = module.valkey.cache_url
-      CELERY_BROKER_URL     = module.valkey.broker_url
-      CELERY_RESULT_BACKEND = module.valkey.result_backend_url
-      AWS_ACCESS_KEY_ID     = module.storage.app_access_key
-      AWS_SECRET_ACCESS_KEY = module.storage.app_secret_key
-    },
-    var.extra_secret_env,
-  )
+  env        = merge(local.runtime_env, var.extra_env)
+  secret_env = local.secret_env
 }
 
 module "monitoring" {
   source = "../monitoring"
 
   name_prefix  = local.name_prefix
-  target_url   = "${local.public_url}/health/live/"
+  target_url   = "${trimsuffix(module.app.live_url, "/")}/health/live/"
   alert_emails = var.alert_emails
 }

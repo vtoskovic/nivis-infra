@@ -12,6 +12,9 @@ module "environment" {
   valkey             = var.valkey
   storage            = var.storage
   default_from_email = var.default_from_email
+  num_proxies        = var.num_proxies
+  lab                = var.lab
+  email_backend      = var.email_backend
   hsts_seconds       = var.hsts_seconds
   alert_emails       = var.alert_emails
   admin_ip_addresses = var.admin_ip_addresses

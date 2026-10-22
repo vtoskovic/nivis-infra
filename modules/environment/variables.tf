@@ -32,8 +32,9 @@ variable "vpc_ip_range" {
 }
 
 variable "domain" {
-  description = "Public hostname of this environment, e.g. \"portal.example.rs\"."
+  description = "Public hostname of this environment, e.g. \"portal.example.rs\"; null until it exists (the app is then served on its ondigitalocean.app URL)."
   type        = string
+  default     = null
 }
 
 variable "dns_zone" {
@@ -102,7 +103,26 @@ variable "default_from_email" {
 variable "num_proxies" {
   description = "Trusted X-Forwarded-For hops in front of Django (App Platform edge + router)."
   type        = number
-  default     = 1
+
+  validation {
+    condition     = var.num_proxies >= 0
+    error_message = "num_proxies must not be negative."
+  }
+}
+
+variable "lab" {
+  description = "Laboratory identity shown in the app and reports."
+  type = object({
+    name       = string
+    short_name = string
+    address    = string
+  })
+}
+
+variable "email_backend" {
+  description = "Django email backend class."
+  type        = string
+  default     = "anymail.backends.resend.EmailBackend"
 }
 
 variable "hsts_seconds" {
@@ -123,7 +143,7 @@ variable "admin_ip_addresses" {
 }
 
 variable "extra_env" {
-  description = "Additional non-secret env vars (e.g. EMAIL_BACKEND)."
+  description = "Additional non-secret env vars ."
   type        = map(string)
   default     = {}
 }

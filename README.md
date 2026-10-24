@@ -164,7 +164,7 @@ first test apply.
 
 1. First push of `main` to `nivis-infra`, only now that the secrets, the state bucket and the DigitalOcean GitHub app
    install exist. `terraform.yml` applies `global` (registry) first, then tries `test`. If `test` fails because the
-   image or branch does not exist, that is expected; carry on. This stands in for the order in spec §8.3 (image
+   image or branch does not exist, that is expected; carry on. This stands in for the order in spec section 8.3 (image
    first, then the app). A failed run leaves the databases and buckets created; the app is created (or recreated)
    on the re-run in step 3.
 2. In the `nivis` repo: Actions, **deploy**, Run workflow on `main`. It builds and pushes `backend:<sha>` and
